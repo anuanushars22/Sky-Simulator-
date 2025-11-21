@@ -1,0 +1,286 @@
+function sky_simulator_r2016a_safe1
+% SKY_SIMULATOR_R2016A_SAFE
+% Minimal, robust sky simulator for MATLAB R2016a (no timers).
+% Use Start / Stop buttons. Recording to AVI possible (start sim first).
+%
+% Save as: sky_simulator_r2016a_safe.m
+
+% ---------- Cleanup any stray timers (just in case) ----------
+try
+    delete(timerfindall);
+catch
+end
+
+% ---------- Figure & Axes ----------
+close all; clc;
+fig = figure('Name','Sky Simulator R2016a (Safe)','NumberTitle','off',...
+    'Color','k','Position',[120 80 1100 640],...
+    'MenuBar','none','ToolBar','none','CloseRequestFcn',@onClose);
+
+ax = axes('Parent',fig,'Position',[0.02 0.08 0.76 0.88]);
+axis(ax,'off'); hold(ax,'on'); axis(ax,[-1 1 0 1.05]); daspect(ax,[1 1 1]);
+
+% ---------- Image / resolution ----------
+res = 240;
+[Xg,Yg] = meshgrid(linspace(-1,1,res), linspace(0,1,res));
+skyImg = zeros(res,res,3);
+hSky = imagesc([-1 1],[0 1], skyImg,'Parent',ax);
+set(ax,'YDir','normal');
+
+% ---------- Sun and Moon ----------
+hSun = plot(ax,0,0,'o','MarkerSize',48,'MarkerFaceColor',[1 0.92 0.6],...
+    'MarkerEdgeColor','none');
+hMoon = plot(ax,0,0,'o','MarkerSize',36,'MarkerFaceColor',[0.92 0.95 1],...
+    'MarkerEdgeColor','none','Visible','off');
+
+% ---------- Stars ----------
+numStars = 250;
+starX = -1 + 2*rand(numStars,1);
+starY = 0.2 + 0.8*rand(numStars,1);
+starSizes = 2 + 6*rand(numStars,1);
+hStars = scatter(ax, starX, starY, starSizes, ones(numStars,3), 'filled');
+set(hStars,'Visible','off');
+
+% ---------- Clouds (scatter groups) ----------
+cloudCount = 14;
+cloudX = linspace(-1.5,1.5,cloudCount) + 0.05*randn(1,cloudCount);
+cloudY = 0.68 + 0.04*randn(1,cloudCount);
+cloudSizes = 40 + 80*rand(1,cloudCount);
+hClouds = scatter(ax, cloudX, cloudY, cloudSizes, repmat([0.95 0.95 0.95],cloudCount,1), 'filled');
+set(hClouds,'MarkerEdgeColor','none');
+
+% ---------- Rainbow (arc) ----------
+theta = linspace(pi, 2*pi, 200);
+r = 0.8;
+rx = r * cos(theta);
+ry = r * sin(theta) * 0.35 + 0.05;
+hRainbow = plot(ax, rx, ry, 'LineWidth', 6, 'Color', [1 0 0]); % color will be overwritten
+set(hRainbow,'Visible','off');
+
+% ---------- Controls ----------
+ctrlX = 880;
+uicontrol(fig,'Style','text','String','Sky Simulator (Safe)','Position',[ctrlX 580 200 24],...
+    'BackgroundColor','k','ForegroundColor','w','FontWeight','bold');
+
+uicontrol(fig,'Style','text','String','Speed','Position',[ctrlX 540 80 18],...
+    'BackgroundColor','k','ForegroundColor','w','HorizontalAlignment','left');
+hSpeed = uicontrol(fig,'Style','slider','Min',0.2,'Max',4,'Value',1,...
+    'Position',[ctrlX+80 540 120 18]);
+
+uicontrol(fig,'Style','text','String','Brightness','Position',[ctrlX 500 80 18],...
+    'BackgroundColor','k','ForegroundColor','w','HorizontalAlignment','left');
+hBright = uicontrol(fig,'Style','slider','Min',0.3,'Max',2,'Value',1,...
+    'Position',[ctrlX+80 500 120 18]);
+
+uicontrol(fig,'Style','text','String','Sun Tint','Position',[ctrlX 460 80 18],...
+    'BackgroundColor','k','ForegroundColor','w','HorizontalAlignment','left');
+hTint = uicontrol(fig,'Style','slider','Min',0,'Max',1,'Value',0.45,...
+    'Position',[ctrlX+80 460 120 18]);
+
+btnStart = uicontrol(fig,'Style','pushbutton','String','START','Position',[ctrlX 380 90 36],...
+    'Callback',@onStart);
+btnStop  = uicontrol(fig,'Style','pushbutton','String','STOP','Position',[ctrlX+110 380 90 36],...
+    'Callback',@onStop);
+uicontrol(fig,'Style','pushbutton','String','SAVE AVI','Position',[ctrlX 330 200 36],...
+    'Callback',@onSave);
+
+hStatus = uicontrol(fig,'Style','text','String','Status: stopped','Position',[ctrlX 290 200 30],...
+    'BackgroundColor',[0.07 0.07 0.07],'ForegroundColor','w','HorizontalAlignment','left');
+
+% ---------- State ----------
+state.running = false;
+state.t0 = tic;
+state.starX = starX; state.starY = starY; state.starSizes = starSizes;
+state.cloudX = cloudX; state.cloudY = cloudY; state.cloudSizes = cloudSizes;
+state.avi = [];        % VideoWriter object (if recording)
+state.recording = false; % logical flag
+guidata(fig,state);
+
+% ---------- Main loop runner (no timer) ----------
+% onStart will call runLoop which loops until running is false or figure closed.
+    function onStart(,)
+        s = guidata(fig);
+        if s.running
+            return;
+        end
+        s.running = true;
+        s.t0 = tic;
+        guidata(fig,s);
+        set(hStatus,'String','Status: running');
+        runLoop();   % runs until s.running is set to false by Stop or Close
+    end
+
+    function onStop(,)
+        s = guidata(fig);
+        if ~s.running
+            return;
+        end
+        s.running = false;
+        % ensure AVI closed if open
+        if isfield(s,'avi') && ~isempty(s.avi)
+            try
+                close(s.avi);
+            catch
+            end
+            s.avi = [];
+            s.recording = false;
+        end
+        guidata(fig,s);
+        set(hStatus,'String','Status: stopped');
+    end
+
+    function onSave(,)
+        % Require the simulation to be running before saving to avoid empty files
+        s = guidata(fig);
+        if ~isfield(s,'running') || ~s.running
+            msgbox('Start the simulation before saving. Click START, then SAVE AVI.','Cannot Save','warn','modal');
+            return;
+        end
+
+        [f,p] = uiputfile('sky_safe.avi','Save AVI As');
+        if isequal(f,0), return; end
+        fullname = fullfile(p,f);
+        vw = VideoWriter(fullname,'Uncompressed AVI');
+
+        try
+            open(vw);
+        catch ME
+            errordlg(['Cannot open AVI for writing: ' ME.message],'Error');
+            return;
+        end
+
+        % set recording state (no modal dialogs so loop continues)
+        s.avi = vw;
+        s.recording = true;
+        guidata(fig,s);
+        set(hStatus,'String','Status: recording...');
+    end
+
+% ---------- The loop itself ----------
+    function runLoop
+        % This loop yields control to the GUI (drawnow) so callbacks work.
+        s = guidata(fig);
+        while true
+            % check that figure is valid
+            if ~ishandle(fig)
+                break;
+            end
+            s = guidata(fig);
+            if ~isfield(s,'running') || ~s.running
+                break;
+            end
+
+            % parameters
+            speed = get(hSpeed,'Value');
+            brightness = get(hBright,'Value');
+            tint = get(hTint,'Value');
+
+            elapsed = toc(s.t0);
+            cycleT = 20 / max(speed, 0.001);   % seconds per full cycle
+            dayFrac = mod(elapsed / cycleT, 1);  % 0..1
+
+            % sun position
+            sunX = -1 + 2*dayFrac;
+            sunY = max(0, sin(dayFrac*pi));  % 0..1..0
+
+            % moon opposite sun
+            moonX = -sunX;
+            moonY = 1 - sunY*0.9;
+
+            % update sun/moon
+            set(hSun,'XData',sunX,'YData',sunY);
+            set(hMoon,'XData',moonX,'YData',moonY);
+
+            % stars visible at night
+            if sunY < 0.12
+                set(hStars,'Visible','on');
+            else
+                set(hStars,'Visible','off');
+            end
+
+            % moon visibility
+            if sunY < 0.18
+                set(hMoon,'Visible','on');
+            else
+                set(hMoon,'Visible','off');
+            end
+
+            % rainbow visible when sun low (simple condition)
+            if sunY < 0.45 && sunY > 0.05
+                set(hRainbow,'Visible','on');
+            else
+                set(hRainbow,'Visible','off');
+            end
+
+            % sky gradient
+            topFactor = Yg; % ascent 0..1
+            baseR = (0.08 + 0.3*topFactor) + (0.6 * (1 - sunY) * tint);
+            baseG = (0.18 + 0.35*topFactor) + (0.3 * (1 - sunY) * tint);
+            baseB = (0.38 + 0.6*topFactor);
+
+            baseR = min(max(baseR * brightness, 0), 1);
+            baseG = min(max(baseG * brightness, 0), 1);
+            baseB = min(max(baseB * brightness, 0), 1);
+
+            skyImg(:,:,1) = baseR;
+            skyImg(:,:,2) = baseG;
+            skyImg(:,:,3) = baseB;
+            set(hSky,'CData',skyImg);
+
+            % cloud motion
+            cx = s.cloudX + 0.002 * speed;
+            cx(cx > 1.6) = -1.6 + 0.02*rand(size(cx(cx > 1.6)));
+            s.cloudX = cx;
+            set(hClouds,'XData',s.cloudX,'YData',s.cloudY,'SizeData',s.cloudSizes);
+            guidata(fig,s);
+
+            % capture frame if recording
+            if isfield(s,'recording') && s.recording && isfield(s,'avi') && ~isempty(s.avi)
+                try
+                    % capture from axes to get consistent size
+                    frame = getframe(ax);
+                    if isstruct(frame) && isfield(frame,'cdata') && ~isempty(frame.cdata)
+                        writeVideo(s.avi, frame.cdata);
+                    end
+                catch
+                    % ignore write errors but keep running
+                end
+            end
+
+            drawnow;  % allow GUI to process events
+
+            % small pause to avoid hogging CPU
+            pause(0.02);
+        end
+
+        % when loop exits, ensure AVI closed
+        s = guidata(fig);
+        if isfield(s,'avi') && ~isempty(s.avi)
+            try close(s.avi); catch; end
+            s.avi = [];
+            s.recording = false;
+            guidata(fig,s);
+        end
+
+        % update status text
+        set(hStatus,'String','Status: stopped');
+    end
+
+% ---------- Close handler ----------
+    function onClose(,)
+        % stop recording / running and delete figure
+        s = guidata(fig);
+        s.running = false;
+        if isfield(s,'avi') && ~isempty(s.avi)
+            try close(s.avi); catch; end
+            s.avi = [];
+            s.recording = false;
+            guidata(fig,s);
+        end
+        try
+            delete(fig);
+        catch
+        end
+    end
+
+end
